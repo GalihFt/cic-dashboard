@@ -1,0 +1,44 @@
+# Raw source data (kept locally, never committed)
+source/
+
+# Archived design and exploration files
+archive/
+
+# Temporary and generated working files
+temp/
+data/dashboard/managed_activity.parquet
+*.tmp
+*.temp
+~$*
+
+# Python bytecode and test caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+venv_/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# IDE and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Logs
+*.log
