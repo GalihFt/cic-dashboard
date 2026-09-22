@@ -44,7 +44,7 @@ def trend_option(categories: list[str], series: dict[str, list[int]]) -> dict:
             {
                 "name": name,
                 "type": "line",
-                "smooth": True,
+                "smooth": False,
                 "symbol": "circle",
                 "symbolSize": 7,
                 "lineStyle": {"width": 3},

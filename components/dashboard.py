@@ -3,9 +3,10 @@ from __future__ import annotations
 from html import escape
 
 import pandas as pd
-from nicegui import ui
+from nicegui import run, ui
 
 from components.charts import cargo_option, composition_option, stuffing_option, trend_option
+from data.dashboard_report import build_dashboard_report
 from data.dashboard_repository import DashboardRepository, format_month
 
 
@@ -93,14 +94,13 @@ def _detail_table_html(rows: list[dict[str, object]]) -> str:
 class DashboardPage:
     def __init__(self, repository: DashboardRepository) -> None:
         self.repository = repository
-        self.port = "Semua"
+        self.ports: list[str] = []
         latest_period = repository.periods[0] if repository.periods else ""
         self.start_period = latest_period
         self.end_period = latest_period
         self.trend_mode = "Muat"
-        self.cargo_mode = "Muat"
-        self.composition_view = "Grade"
         self.vessel_search = ""
+        self.vessel_rows: list[dict[str, object]] = []
         self.kpi_labels: dict[str, ui.label] = {}
         self.kpi_comparison_labels: dict[str, ui.label] = {}
 
@@ -123,11 +123,18 @@ class DashboardPage:
                     ui.label("Container Inventory Control Dashboard").classes("page-title")
                     ui.label("Monitoring Container Movements").classes("page-subtitle")
             with ui.row().classes("header-controls"):
-                port_options = ["Semua", *self.repository.ports]
+                port_options = self.repository.ports
                 self.port_select = (
-                    ui.select(port_options, value=self.port, label="Port", on_change=self._global_filter_changed)
-                    .props('outlined dense options-dense data-testid="port-filter"')
-                    .classes("header-select")
+                    ui.select(
+                        port_options,
+                        value=self.ports,
+                        label="Port (semua jika kosong)",
+                        multiple=True,
+                        clearable=True,
+                        on_change=self._global_filter_changed,
+                    )
+                    .props('outlined dense options-dense use-chips data-testid="port-filter"')
+                    .classes("header-select port-multi-select")
                 )
                 period_options = {period: format_month(period) for period in self.repository.periods}
                 self.start_period_select = (
@@ -139,6 +146,15 @@ class DashboardPage:
                     ui.select(period_options, value=self.end_period, label="Sampai", on_change=self._end_period_changed)
                     .props('outlined dense options-dense data-testid="period-end-filter"')
                     .classes("header-select period-select")
+                )
+                self.download_button = (
+                    ui.button(
+                        "Download Report",
+                        icon="download",
+                        on_click=self._download_report,
+                    )
+                    .props('no-caps unelevated data-testid="download-report"')
+                    .classes("download-report-button")
                 )
                 with ui.row().classes("updated-block"):
                     ui.icon("schedule", size="27px")
@@ -191,27 +207,23 @@ class DashboardPage:
             with card:
                 self.trend_chart = ui.echart({}).classes("chart chart-row-two")
 
-            card, header = _card("Top Cargo", "Total TEU")
-            with header:
-                self.cargo_toggle = (
-                    ui.toggle(["Muat", "Bongkar"], value=self.cargo_mode, on_change=self._cargo_changed)
-                    .props('no-caps unelevated data-testid="cargo-toggle"')
-                    .classes("segment-toggle two-items")
-                )
+            card, _ = _card("Top Cargo Muat", "Total TEU")
             with card:
-                self.cargo_chart = ui.echart({}).classes("chart chart-row-two")
+                self.cargo_muat_chart = ui.echart({}).classes("chart chart-row-two")
+
+            card, _ = _card("Top Cargo Bongkar", "Total TEU")
+            with card:
+                self.cargo_bongkar_chart = ui.echart({}).classes("chart chart-row-two")
 
     def _row_three(self) -> None:
         with ui.element("section").classes("content-grid row-three"):
-            card, header = _card("Komposisi Container", "Perbandingan grade atau size pada setiap status")
-            with header:
-                self.composition_toggle = (
-                    ui.toggle(["Grade", "Size"], value=self.composition_view, on_change=self._composition_changed)
-                    .props('no-caps unelevated data-testid="composition-toggle"')
-                    .classes("segment-toggle two-items")
-                )
+            card, _ = _card("Komposisi Container - Grade", "Total TEU per status")
             with card:
-                self.composition_chart = ui.echart({}).classes("chart chart-row-three")
+                self.composition_grade_chart = ui.echart({}).classes("chart chart-row-three")
+
+            card, _ = _card("Komposisi Container - Size", "Total TEU per status")
+            with card:
+                self.composition_size_chart = ui.echart({}).classes("chart chart-row-three")
 
             card, _ = _card("Aktivitas Stuffing & Stripping", "Total TEU")
             with card:
@@ -230,7 +242,7 @@ class DashboardPage:
             self.table = ui.html(_detail_table_html([]), sanitize=False).classes("w-full")
 
     def _global_filter_changed(self) -> None:
-        self.port = self.port_select.value
+        self.ports = list(self.port_select.value or [])
         self.refresh()
 
     def _start_period_changed(self) -> None:
@@ -249,37 +261,78 @@ class DashboardPage:
 
     def _trend_changed(self) -> None:
         self.trend_mode = self.trend_toggle.value
-        self._refresh_trend(self._filtered_data())
-
-    def _cargo_changed(self) -> None:
-        self.cargo_mode = self.cargo_toggle.value
-        self._refresh_cargo(self._filtered_data())
-
-    def _composition_changed(self) -> None:
-        self.composition_view = self.composition_toggle.value
-        self._refresh_composition(self._filtered_data())
+        self._refresh_trend()
 
     def _vessel_search_changed(self) -> None:
         self.vessel_search = (self.vessel_search_input.value or "").strip().casefold()
-        self._refresh_table(self._filtered_data())
+        self._refresh_table()
 
-    def _filtered_data(self):
-        return self.repository.filtered(self.port, self.start_period, self.end_period)
+    async def _download_report(self) -> None:
+        self.download_button.disable()
+        try:
+            content = await run.io_bound(
+                build_dashboard_report,
+                self.repository,
+                self.ports,
+                self.start_period,
+                self.end_period,
+            )
+            filename = f"dashboard_cic_{self.start_period}_{self.end_period}.xlsx"
+            ui.download(
+                content,
+                filename=filename,
+                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+            ui.notify("Report dashboard berhasil dibuat.", type="positive")
+        except Exception as error:
+            ui.notify(f"Report tidak dapat dibuat: {error}", type="negative", timeout=8000)
+        finally:
+            self.download_button.enable()
 
-    def _refresh_trend(self, data) -> None:
-        categories, series = self.repository.trend(data, self.trend_mode)
+    def _refresh_trend(self) -> None:
+        categories, series = self.repository.summary_trend(
+            self.ports, self.start_period, self.end_period, self.trend_mode
+        )
         self._set_chart(self.trend_chart, trend_option(categories, series))
 
-    def _refresh_cargo(self, data) -> None:
-        categories, values = self.repository.cargo_ranking(data, self.cargo_mode)
-        self._set_chart(self.cargo_chart, cargo_option(categories, values, self.cargo_mode))
+    def _refresh_cargo(self) -> None:
+        muat_categories, muat_values = self.repository.summary_cargo_ranking(
+            self.ports, self.start_period, self.end_period, "Muat"
+        )
+        bongkar_categories, bongkar_values = self.repository.summary_cargo_ranking(
+            self.ports, self.start_period, self.end_period, "Bongkar"
+        )
+        self._set_chart(
+            self.cargo_muat_chart,
+            cargo_option(muat_categories, muat_values, "Muat"),
+        )
+        self._set_chart(
+            self.cargo_bongkar_chart,
+            cargo_option(bongkar_categories, bongkar_values, "Bongkar"),
+        )
 
-    def _refresh_composition(self, data) -> None:
-        categories, series = self.repository.composition(data, self.composition_view)
-        self._set_chart(self.composition_chart, composition_option(categories, series, self.composition_view))
+    def _refresh_composition(self) -> None:
+        grade_categories, grade_series = self.repository.summary_composition(
+            self.ports, self.start_period, self.end_period, "Grade"
+        )
+        size_categories, size_series = self.repository.summary_composition(
+            self.ports, self.start_period, self.end_period, "Size"
+        )
+        self._set_chart(
+            self.composition_grade_chart,
+            composition_option(grade_categories, grade_series, "Grade"),
+        )
+        self._set_chart(
+            self.composition_size_chart,
+            composition_option(size_categories, size_series, "Size"),
+        )
 
-    def _refresh_table(self, data) -> None:
-        rows = self.repository.vessel_detail(data)
+    def _refresh_table(self, rebuild: bool = False) -> None:
+        if rebuild:
+            self.vessel_rows = self.repository.summary_vessel_detail(
+                self.ports, self.start_period, self.end_period
+            )
+        rows = self.vessel_rows
         if self.vessel_search:
             rows = [
                 row
@@ -297,8 +350,9 @@ class DashboardPage:
         chart.update()
 
     def refresh(self) -> None:
-        data = self._filtered_data()
-        kpis, comparisons = self.repository.kpi_comparison(self.port, self.start_period, self.end_period)
+        kpis, comparisons = self.repository.summary_kpi_comparison(
+            self.ports, self.start_period, self.end_period
+        )
         comparison_period = "bulan lalu" if self.start_period == self.end_period else "periode sebelumnya"
         for key, value in kpis.items():
             self.kpi_labels[key].set_text(_number(value))
@@ -316,8 +370,15 @@ class DashboardPage:
                 label = self.kpi_comparison_labels[key]
                 label.set_text(text)
                 label.classes(remove="positive negative neutral", add=state)
-        self._refresh_trend(data)
-        self._refresh_cargo(data)
-        self._refresh_composition(data)
-        self._set_chart(self.stuffing_chart, stuffing_option(self.repository.stuffing_stripping(data)))
-        self._refresh_table(data)
+        self._refresh_trend()
+        self._refresh_cargo()
+        self._refresh_composition()
+        self._set_chart(
+            self.stuffing_chart,
+            stuffing_option(
+                self.repository.summary_stuffing_stripping(
+                    self.ports, self.start_period, self.end_period
+                )
+            ),
+        )
+        self._refresh_table(rebuild=True)

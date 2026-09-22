@@ -5,7 +5,12 @@ from pathlib import Path
 import pandas as pd
 from data.dashboard_repository import DashboardRepository
 from data.dashboard_store import DashboardDataStore, DuplicateMonthError
-from pipeline.build_dashboard_data import DEFAULT_OUTPUT, DEFAULT_SOURCE, build_dashboard_data
+from pipeline.build_dashboard_data import (
+    DEFAULT_OUTPUT,
+    DEFAULT_SOURCE,
+    build_dashboard_data,
+    build_dashboard_frame,
+)
 
 
 class DashboardDataTests(unittest.TestCase):
@@ -18,6 +23,26 @@ class DashboardDataTests(unittest.TestCase):
     def test_pipeline_preserves_unique_events(self) -> None:
         self.assertEqual(len(self.data), 38_016)
         self.assertEqual(self.data["event_id"].nunique(), 38_016)
+
+    def test_missing_history_uses_stable_synthetic_id_and_deduplicates(self) -> None:
+        raw = pd.read_csv(DEFAULT_SOURCE, nrows=2)
+        raw["NO_HISTORY"] = pd.NA
+        raw.loc[:, "NO_CONTAINER"] = "TEST1234567"
+        raw.loc[:, "CURRSTATE"] = "FTL"
+        raw.loc[:, "CTSTAMP"] = "10/06/2026 12:00:00"
+        raw.loc[:, "CTGLSTATUS"] = "10/06/2026"
+        raw.loc[0, "PREV_TGLSTATUS"] = "01/06/2026"
+        raw.loc[1, "PREV_TGLSTATUS"] = "09/06/2026"
+        raw.loc[0, "PREV_STATE"] = "MTA"
+        raw.loc[1, "PREV_STATE"] = "MAS"
+
+        first = build_dashboard_frame(raw, source_name="missing-history.csv")
+        second = build_dashboard_frame(raw.iloc[::-1], source_name="missing-history.csv")
+
+        self.assertEqual(len(first), 1)
+        self.assertEqual(first.iloc[0]["prev_state"], "MAS")
+        self.assertTrue(first.iloc[0]["event_id"].startswith("SYN-"))
+        self.assertEqual(first.iloc[0]["event_id"], second.iloc[0]["event_id"])
 
     def test_vessel_voyage_route_is_removed(self) -> None:
         self.assertFalse(self.data["vessel_voyage"].str.contains(" ", regex=False).any())
